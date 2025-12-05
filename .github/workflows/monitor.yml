@@ -3,7 +3,7 @@ name: Monitor RCKiK Kraków – aktualności
 
 on:
   schedule:
-    - cron: "*/5 * * * *"   # uruchamiaj co 5 minut
+    - cron: "0 6,14 * * *"   # 07:00 i 15:00 czasu PL
   workflow_dispatch:        # pozwala uruchomić ręcznie z UI
 
 jobs:
