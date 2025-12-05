@@ -3,8 +3,8 @@ name: Monitor RCKiK Kraków – aktualności
 
 on:
   schedule:
-    - cron: "*/5 * * * *"   # co 5 minut
-  workflow_dispatch:        # ręczne uruchomienie z UI
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
 
 jobs:
   check:
@@ -17,7 +17,22 @@ jobs:
           python -m pip install --upgrade pip
           pip install requests beautifulsoup4
 
-      
+      - name: Debug env
+        env:
+          TARGET_URL: ${{ secrets.TARGET_URL }}
+          TEXT_TO_CHECK: ${{ secrets.TEXT_TO_CHECK }}
+        run: |
+          echo "TARGET_URL length: ${#TARGET_URL}"
+          echo "TEXT_TO_CHECK length: ${#TEXT_TO_CHECK}"
+
+      - name: Uruchom checker
+        id: run_checker
+        env:
+          TARGET_URL: ${{ secrets.TARGET_URL }}
+          TEXT_TO_CHECK: ${{ secrets.TEXT_TO_CHECK }}
+        run: |
+          python checker.py
+
       - name: Wyślij e-mail gdy informacja zniknęła
         if: failure()
         uses: dawidd6/action-send-mail@v3
