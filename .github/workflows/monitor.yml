@@ -3,21 +3,24 @@ name: Monitor RCKiK Kraków – aktualności
 
 on:
   schedule:
-    - cron: "*/5 * * * *"
-  workflow_dispatch:
+    - cron: "*/5 * * * *"   # uruchamiaj co 5 minut
+  workflow_dispatch:        # pozwala uruchomić ręcznie z UI
 
 jobs:
   check:
     runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
 
-      - name: Zainstaluj zależności
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Zainstaluj zależności Pythona
         run: |
           python -m pip install --upgrade pip
           pip install requests beautifulsoup4
 
-      - name: Debug env
+      # Krok pomocniczy: pozwala szybko zweryfikować, że sekrety rzeczywiście trafiają do joba
+      - name: Debug env (długości wartości)
         env:
           TARGET_URL: ${{ secrets.TARGET_URL }}
           TEXT_TO_CHECK: ${{ secrets.TEXT_TO_CHECK }}
@@ -33,15 +36,17 @@ jobs:
         run: |
           python checker.py
 
+      # Wysyłamy e-mail TYLKO gdy checker zwróci kod != 0 (czyli brak frazy / błąd krytyczny)
+      # Uwaga: poniższa konfiguracja jest dla Gmaila na 587 (STARTTLS) -> secure:false
       - name: Wyślij e-mail gdy informacja zniknęła
-        if: failure()
+        if: failure()               # uruchom, gdy poprzedni krok jest "Failed" (np. exit 1)
         uses: dawidd6/action-send-mail@v3
         with:
-          server_address: ${{ secrets.SMTP_SERVER }}
-          server_port: ${{ secrets.SMTP_PORT }}
-          secure: true
-          username: ${{ secrets.SMTP_USER }}
-          password: ${{ secrets.SMTP_PASS }}
+          server_address: ${{ secrets.SMTP_SERVER }}  # np. smtp.gmail.com
+          server_port: ${{ secrets.SMTP_PORT }}       # 587 dla STARTTLS
+          secure: false                               # STARTTLS => secure:false (DLA 587)
+          username: ${{ secrets.SMTP_USER }}          # pełny adres e-mail (np. tomaszmm3@gmail.com)
+          password: ${{ secrets.SMTP_PASS }}          # hasło aplikacyjne (nie zwykłe)
           subject: "ALERT: Zniknięcie komunikatu na rckik.krakow.pl"
           to: "tomaszmm3@gmail.com"
           from: "RCKiK Monitor <${{ secrets.SMTP_USER }}>"
@@ -49,3 +54,5 @@ jobs:
             Wykryto zniknięcie frazy:
             "${{ secrets.TEXT_TO_CHECK }}"
             na stronie: ${{ secrets.TARGET_URL }}
+
+            Ten e-mail został wysłany automatycznie przez GitHub Actions.
