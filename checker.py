@@ -3,23 +3,24 @@ import os, sys, time, re
 import requests
 from bs4 import BeautifulSoup
 
-# --- Konfiguracja z sekretów ---
 PRIMARY_URL = os.getenv("TARGET_URL")  # np. https://rckik.krakow.pl/aktualnosci
 TEXT_TO_CHECK = os.getenv("TEXT_TO_CHECK")  # np. Komunikat dot. pobierania krwi w grupie AB +
 
-# --- Dodatkowe adresy do sprawdzenia (fallbacki) ---
+ARTICLE_URL = "https://rckik.krakow.pl/aktualnosci/komunikat-dot-pobierania-krwi-w-grupie-ab"
 FALLBACK_URLS = [
-    "https://rckik.krakow.pl/",  # strona główna (sekcja "Aktualności")
-    "https://rckik.krakow.pl/aktualnosci/komunikat-dot-pobierania-krwi-w-grupie-ab",  # podstrona wpisu
+    "https://rckik.krakow.pl/",
+    ARTICLE_URL,
 ]
 
-HEADERS = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"}
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
+}
 
 def fetch_with_retries(url, retries=2, timeout=30, backoff=3):
     last_exc = None
-    for _ in range(retries + 1):
+    for attempt in range(retries + 1):
         try:
-            resp = requests.get(url, headers=HEADERS, timeout=timeout)
+            resp = requests.get(url, headers=HEADERS, timeout=timeout, allow_redirects=True)
             if not resp.encoding:
                 resp.encoding = "utf-8"
             resp.raise_for_status()
@@ -30,28 +31,40 @@ def fetch_with_retries(url, retries=2, timeout=30, backoff=3):
     raise last_exc
 
 def normalize_spaces(text: str) -> str:
-    # Zamiana niełamliwych spacji na zwykłe + redukcja wielokrotnych odstępów
     text = (text or "").replace("\u00A0", " ").replace("\u2007", " ").replace("\u202F", " ")
     text = re.sub(r"\s+", " ", text)
     return text.strip()
 
 def build_variants(base: str):
-    """Warianty frazy: małe litery, różne odstępy przy '+' w 'AB +'."""
     b = normalize_spaces(base).lower()
     variants = set()
     variants.add(b)
-    # Warianty dla 'ab +' ↔ 'ab+'
     variants.add(b.replace(" ab +", " ab+"))
     variants.add(b.replace(" ab+", " ab +"))
-    # Ostrożnie: jeśli ktoś poda frazę bez '+', nie tworzymy dziwnych wariantów
+    # Dodatkowy wariant bez znaku '+' (czasem CMS kroi tytuł)
+    variants.add(b.replace("+", "").replace("  ", " "))
     return variants
 
-def page_contains_text(url: str, variants: set) -> bool:
-    resp = fetch_with_retries(url)
-    soup = BeautifulSoup(resp.text, "html.parser")
+def page_contains_text(resp_text: str, variants: set) -> bool:
+    soup = BeautifulSoup(resp_text, "html.parser")
     page_text = soup.get_text(separator=" ", strip=True)
     page_norm = normalize_spaces(page_text).lower()
     return any(v in page_norm for v in variants)
+
+def check_url_for_text(url: str, variants: set):
+    try:
+        resp = fetch_with_retries(url)
+        body = resp.text or ""
+        found = page_contains_text(body, variants)
+        print(f"[DEBUG] URL: {url} | HTTP {resp.status_code} | length={len(body)} | {'FOUND' if found else 'NOT_FOUND'}")
+        return resp.status_code, found
+    except requests.HTTPError as he:
+        status = getattr(he.response, "status_code", "N/A")
+        print(f"[DEBUG] URL: {url} | HTTP {status} | exception={he}")
+        return status, False
+    except Exception as e:
+        print(f"[DEBUG] URL: {url} | exception={e}")
+        return "ERR", False
 
 def main():
     if not PRIMARY_URL or not TEXT_TO_CHECK:
@@ -64,29 +77,22 @@ def main():
     variants = build_variants(TEXT_TO_CHECK)
     print(f"[DEBUG] Liczba wariantów wzorca: {len(variants)}")
 
-    urls_to_check = [PRIMARY_URL] + FALLBACK_URLS
-    any_found = False
-    errors = []
+    urls = [PRIMARY_URL] + FALLBACK_URLS
 
-    for u in urls_to_check:
-        try:
-            found = page_contains_text(u, variants)
-            print(f"[DEBUG] URL: {u} -> {'FOUND' if found else 'NOT_FOUND'}")
-            if found:
-                any_found = True
-                break
-        except Exception as e:
-            errors.append(f"{u}: {e}")
+    status_article, found_article = check_url_for_text(ARTICLE_URL, variants)
+    # Filar A: obecność artykułu = HTTP 200 na podstronie artykułu
+    article_exists = (status_article == 200)
 
-    if any_found:
-        print("[OK] Informacja nadal widoczna (co najmniej na jednym z adresów).")
+    found_any = found_article
+    for u in urls:
+        status, found = check_url_for_text(u, variants)
+        found_any = found_any or found
+
+    if article_exists or found_any:
+        print("[OK] Informacja nadal widoczna (HTTP200 lub dopasowanie tekstu).")
         sys.exit(0)
     else:
-        if errors:
-            print("[WARN] Wystąpiły błędy podczas pobierania niektórych adresów:")
-            for e in errors:
-                print("       -", e)
-        print("[ALERT] Informacja ZNIKNĘŁA (nie znaleziono na żadnym z adresów).")
+        print("[ALERT] Informacja ZNIKNĘŁA (brak HTTP200 oraz brak dopasowania tekstu).")
         sys.exit(1)
 
 if __name__ == "__main__":
