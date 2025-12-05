@@ -17,20 +17,13 @@ jobs:
           python -m pip install --upgrade pip
           pip install requests beautifulsoup4
 
-      - name: Uruchom checker
-        id: run_checker
-        env:
-          TARGET_URL: ${{ secrets.TARGET_URL }}
-          TEXT_TO_CHECK: ${{ secrets.TEXT_TO_CHECK }}
-        run: |
-          python checker.py
-
+      
       - name: Wyślij e-mail gdy informacja zniknęła
         if: failure()
         uses: dawidd6/action-send-mail@v3
         with:
-          server: ${{ secrets.SMTP_SERVER }}
-          port: ${{ secrets.SMTP_PORT }}
+          server_address: ${{ secrets.SMTP_SERVER }}
+          server_port: ${{ secrets.SMTP_PORT }}
           secure: true
           username: ${{ secrets.SMTP_USER }}
           password: ${{ secrets.SMTP_PASS }}
