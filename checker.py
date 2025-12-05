@@ -3,12 +3,10 @@ import os, sys, time
 import requests
 from bs4 import BeautifulSoup
 
-URL = os.getenv("TARGET_URL", "https://rckik.krakow.pl/aktualnosci")
-TEXT_TO_CHECK = os.getenv("TEXT_TO_CHECK", "Komunikat dot. pobierania krwi w grupie AB +")
+URL = os.getenv("TARGET_URL")
+TEXT_TO_CHECK = os.getenv("TEXT_TO_CHECK")
 
-HEADERS = {
-    "User-Agent": "Mozilla/5.0"
-}
+HEADERS = {"User-Agent": "Mozilla/5.0"}
 
 def fetch_with_retries(url, retries=2, timeout=30, backoff=3):
     last_exc = None
@@ -23,8 +21,13 @@ def fetch_with_retries(url, retries=2, timeout=30, backoff=3):
     raise last_exc
 
 def main():
+    if not URL or not TEXT_TO_CHECK:
+        print("[ERROR] Brak TARGET_URL lub TEXT_TO_CHECK w env.")
+        sys.exit(2)  # błąd konfiguracji, nie wysyłamy alertu
+
     print(f"[INFO] Sprawdzam: {URL}")
-    print(f"[INFO] Szukam frazy: {TEXT_TO_CHECK}")
+    # Uwaga: GitHub maskuje sekrety w logach, więc zobaczysz *** zamiast wartości
+    print(f"[INFO] Szukam frazy (długość): {len(TEXT_TO_CHECK)}")
 
     try:
         resp = fetch_with_retries(URL)
