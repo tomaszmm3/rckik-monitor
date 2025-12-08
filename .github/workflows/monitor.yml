@@ -1,26 +1,131 @@
 
+name: Monitor RCKiK Kraków – aktualności
+
+on:
+  schedule:
+    # Uwaga: cron w GitHub Actions jest w UTC.
+    # 05:00 i 13:00 UTC => 06:00 i 14:00 CET (zimą) / 07:00 i 15:00 CEST (latem)
+    - cron: "0 5,13 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write    # pozwala commitować plik statusu do repo (GITHUB_TOKEN)
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Ustal wersję Pythona
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Zainstaluj zależności Pythona
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install requests
+
+      # Podgląd długości secrets (bez ujawniania wartości)
+      - name: Debug ENV (długości wartości)
+        env:
+          TARGET_URL: ${{ secrets.TARGET_URL }}
+          TEXT_TO_CHECK: ${{ secrets.TEXT_TO_CHECK }}
+        run: |
+          echo "[DEBUG] TARGET_URL length: ${#TARGET_URL}"
+          echo "[DEBUG] TEXT_TO_CHECK length: ${#TEXT_TO_CHECK}"
+
+      # Uruchom checker (niebuforowane wyjście -u i PYTHONUNBUFFERED=1)
+      - name: Uruchom checker (nie przerywaj, nawet gdy exit!=0)
+        id: run_checker
+        continue-on-error: true
+        env:
+          TARGET_URL: ${{ secrets.TARGET_URL }}
+          TEXT_TO_CHECK: ${{ secrets.TEXT_TO_CHECK }}
+          PREV_STATUS_PATH: ".status/rckik.json"
+          PYTHONUNBUFFERED: "1"
+        run: |
+          echo "[INFO] Start checker.py"
+          python -u checker.py
+          echo "exit_code=$?" >> $GITHUB_OUTPUT
+          echo "[INFO] Koniec checker.py"
+
+      - name: Wyświetl wnioski z checker.py
+        run: |
+          echo "Exit code: ${{ steps.run_checker.outputs.exit_code }}"
+          if [ -f ".changed" ]; then
+            echo "ZMIANA STANU: TAK (plik .changed istnieje)"
+          else
+            echo "ZMIANA STANU: NIE"
+          fi
+          echo "Aktualny status pliku:"
+          cat .status/rckik.json || true
+
+      # ✅ Commitujemy status po KAŻDYM runie (nie tylko przy zmianie).
+      - name: Commituj zaktualizowany status (zawsze)
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add .status/rckik.json
+          if ! git diff --cached --quiet; then
+            git commit -m "Update status ($(date -u +'%Y-%m-%dT%H:%M:%SZ'))"
+            git push
+            echo "Committed .status/rckik.json"
+          else
+            echo "Brak zmian w .status/rckik.json – pomijam commit."
+          fi
+
+      # Przygotuj treść maila (tylko gdy stan się zmienił)
+      # Tworzymy output `body`, który przekażemy do akcji wysyłającej e-mail.
+      - name: Przygotuj treść e-maila (tylko gdy stan się zmienił)
+        id: prepare_email
+        if: hashFiles('.changed') != ''
+        env:
+          TARGET_URL: ${{ secrets.TARGET_URL }}
+          TEXT_TO_CHECK: ${{ secrets.TEXT_TO_CHECK }}
+        run: |
+          FOUND=$(jq -r '.found' .status/rckik.json)
+          TITLE=$(jq -r '.post.title // "Brak wpisu"' .status/rckik.json)
+          LINK=$(jq -r '.post.link  // "Brak linku"'  .status/rckik.json)
+          CHECKED_AT=$(jq -r '.checked_at // "brak daty"' .status/rckik.json)
+
+          if [ "$FOUND" = "true" ]; then
+            STATUS="OBECNY"
+          else
+            STATUS="NIEOBECNY"
+          fi
+
+          # Zbuduj treść maila w zmiennej i przekaż jako output kroku
+          {
+            echo "body<<EOF"
+            echo "Wykryto ZMIANĘ stanu komunikatu:"
+            echo "\"${TEXT_TO_CHECK}\""
+            echo "na stronie: ${TARGET_URL}"
+            echo
+            echo "Aktualny status: ${STATUS}"
+            echo "Szczegóły:"
+            echo "Tytuł: ${TITLE}"
+            echo "Link:  ${LINK}"
+            echo "Data sprawdzenia: ${CHECKED_AT}"
+            echo
+            echo "Ten e-mail został wysłany automatycznie przez GitHub Actions."
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      # Wysyłka maila TYLKO przy zmianie stanu (gdy plik .changed istnieje)
       - name: Wyślij e-mail (tylko gdy stan się zmienił)
         if: hashFiles('.changed') != ''
         uses: dawidd6/action-send-mail@v3
         with:
-          server_address: ${{ secrets.SMTP_SERVER }}
-          server_port: ${{ secrets.SMTP_PORT }}
-          secure: ${{ secrets.SMTP_SECURE }}
-          username: ${{ secrets.SMTP_USER }}
-          password: ${{ secrets.SMTP_PASS }}
+          server_address: ${{ secrets.SMTP_SERVER }}   # np. smtp.gmail.com
+          server_port: ${{ secrets.SMTP_PORT }}        # 587 (STARTTLS) lub 465 (SSL)
+          secure: ${{ secrets.SMTP_SECURE }}           # "false" dla 587, "true" dla 465
+          username: ${{ secrets.SMTP_USER }}           # pełny adres e-mail
+          password: ${{ secrets.SMTP_PASS }}           # hasło aplikacyjne (Gmail/inna poczta)
           subject: "ZMIANA STANU: Komunikat RCKiK Kraków"
           to: "tomaszmm3@gmail.com"
           from: "RCKiK Monitor <${{ secrets.SMTP_USER }}>"
-          body: |
-            Wykryto ZMIANĘ stanu komunikatu:
-            "${{ secrets.TEXT_TO_CHECK }}"
-            na stronie: ${{ secrets.TARGET_URL }}
-
-            Aktualny status:
-            $(jq -r '.found' .status/rckik.json | sed 's/true/OBECNY/g; s/false/NIEOBECNY/g')
-
-            Szczegóły:
-            $(jq -r '.post.title // "Brak wpisu"' .status/rckik.json)
-            Link: $(jq -r '.post.link // "Brak linku"' .status/rckik.json)
-
-            Ten e-mail został wysłany automatycznie przez GitHub Actions.
+          body: ${{ steps.prepare_email.outputs.body }}
