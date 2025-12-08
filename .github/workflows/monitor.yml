@@ -3,8 +3,13 @@ name: Monitor RCKiK Kraków – aktualności
 
 on:
   schedule:
-    - cron: "0 6,14 * * *"   # 07:00 i 15:00 czasu PL
-  workflow_dispatch:        # pozwala uruchomić ręcznie z UI
+    # Uwaga: cron w GitHub Actions jest w UTC.
+    # 05:00 i 13:00 UTC => 06:00 i 14:00 CET (zimą) / 07:00 i 15:00 CEST (latem)
+    - cron: "0 5,13 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write    # pozwala commitować status do repo (z GITHUB_TOKEN)
 
 jobs:
   check:
@@ -14,45 +19,75 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v4
 
+      - name: Ustal wersję Pythona
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
       - name: Zainstaluj zależności Pythona
         run: |
           python -m pip install --upgrade pip
-          pip install requests beautifulsoup4
+          python -m pip install requests
 
-      # Krok pomocniczy: pozwala szybko zweryfikować, że sekrety rzeczywiście trafiają do joba
-      - name: Debug env (długości wartości)
+      - name: Debug ENV (długości wartości)
         env:
           TARGET_URL: ${{ secrets.TARGET_URL }}
           TEXT_TO_CHECK: ${{ secrets.TEXT_TO_CHECK }}
         run: |
-          echo "TARGET_URL length: ${#TARGET_URL}"
-          echo "TEXT_TO_CHECK length: ${#TEXT_TO_CHECK}"
+          echo "[DEBUG] TARGET_URL length: ${#TARGET_URL}"
+          echo "[DEBUG] TEXT_TO_CHECK length: ${#TEXT_TO_CHECK}"
 
-      - name: Uruchom checker
+      - name: Uruchom checker (nie przerywaj, nawet gdy exit!=0)
         id: run_checker
+        continue-on-error: true   # pozwala wykonać kolejne kroki niezależnie od kodu wyjścia
         env:
           TARGET_URL: ${{ secrets.TARGET_URL }}
           TEXT_TO_CHECK: ${{ secrets.TEXT_TO_CHECK }}
+          PREV_STATUS_PATH: ".status/rckik.json"
         run: |
+          echo "[INFO] Start checker.py"
           python checker.py
+          echo "exit_code=$?" >> $GITHUB_OUTPUT
+          echo "[INFO] Koniec checker.py"
 
-      # Wysyłamy e-mail TYLKO gdy checker zwróci kod != 0 (czyli brak frazy / błąd krytyczny)
-      # Uwaga: poniższa konfiguracja jest dla Gmaila na 587 (STARTTLS) -> secure:false
-      - name: Wyślij e-mail gdy informacja zniknęła
-        if: failure()               # uruchom, gdy poprzedni krok jest "Failed" (np. exit 1)
+      - name: Wyświetl wnioski z checker.py
+        run: |
+          echo "Exit code: ${{ steps.run_checker.outputs.exit_code }}"
+          if [ -f ".changed" ]; then
+            echo "ZMIANA STANU: TAK (plik .changed istnieje)"
+          else
+            echo "ZMIANA STANU: NIE"
+          fi
+          echo "Aktualny status pliku:"
+          cat .status/rckik.json || true
+
+      # Commitujemy zaktualizowany status TYLKO gdy wykryto zmianę
+      - name: Commituj zaktualizowany status (tylko przy zmianie)
+        if: hashFiles('.changed') != ''
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add .status/rckik.json
+          git commit -m "Update status: state changed ($(date -u +'%Y-%m-%dT%H:%M:%SZ'))"
+          git push
+
+      # Wysyłka maila TYLKO przy zmianie
+      - name: Wyślij e-mail (tylko gdy stan się zmienił)
+        if: hashFiles('.changed') != ''
         uses: dawidd6/action-send-mail@v3
         with:
           server_address: ${{ secrets.SMTP_SERVER }}  # np. smtp.gmail.com
-          server_port: ${{ secrets.SMTP_PORT }}       # 587 dla STARTTLS
-          secure: false                               # STARTTLS => secure:false (DLA 587)
-          username: ${{ secrets.SMTP_USER }}          # pełny adres e-mail (np. tomaszmm3@gmail.com)
-          password: ${{ secrets.SMTP_PASS }}          # hasło aplikacyjne (nie zwykłe)
-          subject: "ALERT: Zniknięcie komunikatu na rckik.krakow.pl"
+          server_port: ${{ secrets.SMTP_PORT }}       # 587 (STARTTLS) lub 465 (SSL)
+          secure: ${{ secrets.SMTP_SECURE }}          # np. false dla 587, true dla 465
+          username: ${{ secrets.SMTP_USER }}          # pełny adres e-mail
+          password: ${{ secrets.SMTP_PASS }}          # hasło aplikacyjne (dla Gmaila)
+          subject: "ZMIANA STANU: Komunikat RCKiK Kraków"
           to: "tomaszmm3@gmail.com"
           from: "RCKiK Monitor <${{ secrets.SMTP_USER }}>"
           body: |
-            Wykryto zniknięcie frazy:
+            Wykryto ZMIANĘ stanu obecności komunikatu:
             "${{ secrets.TEXT_TO_CHECK }}"
             na stronie: ${{ secrets.TARGET_URL }}
 
+            Sprawdź aktualny status w repo (.status/rckik.json).
             Ten e-mail został wysłany automatycznie przez GitHub Actions.
