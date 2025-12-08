@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write    # pozwala commitować status do repo (z GITHUB_TOKEN)
+  contents: write    # pozwala commitować plik statusu do repo (GITHUB_TOKEN)
 
 jobs:
   check:
@@ -29,6 +29,7 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install requests
 
+      # Krótki podgląd wartości secrets (nie drukujemy pełnych – tylko długości)
       - name: Debug ENV (długości wartości)
         env:
           TARGET_URL: ${{ secrets.TARGET_URL }}
@@ -37,16 +38,19 @@ jobs:
           echo "[DEBUG] TARGET_URL length: ${#TARGET_URL}"
           echo "[DEBUG] TEXT_TO_CHECK length: ${#TEXT_TO_CHECK}"
 
+      # Uruchamiamy checker z niebuforowanym wyjściem (-u) i jawnie ustawiamy PYTHONUNBUFFERED,
+      # żeby wszystkie logi z checker.py były widoczne w Actions.
       - name: Uruchom checker (nie przerywaj, nawet gdy exit!=0)
         id: run_checker
-        continue-on-error: true   # pozwala wykonać kolejne kroki niezależnie od kodu wyjścia
+        continue-on-error: true
         env:
           TARGET_URL: ${{ secrets.TARGET_URL }}
           TEXT_TO_CHECK: ${{ secrets.TEXT_TO_CHECK }}
           PREV_STATUS_PATH: ".status/rckik.json"
+          PYTHONUNBUFFERED: "1"
         run: |
           echo "[INFO] Start checker.py"
-          python checker.py
+          python -u checker.py
           echo "exit_code=$?" >> $GITHUB_OUTPUT
           echo "[INFO] Koniec checker.py"
 
@@ -61,26 +65,31 @@ jobs:
           echo "Aktualny status pliku:"
           cat .status/rckik.json || true
 
-      # Commitujemy zaktualizowany status TYLKO gdy wykryto zmianę
-      - name: Commituj zaktualizowany status (tylko przy zmianie)
-        if: hashFiles('.changed') != ''
+      # ✅ COMMITUJEMY status po KAŻDYM runie (nie tylko przy zmianie).
+      # Unikamy pustych commitów: sprawdzamy, czy są staged changes.
+      - name: Commituj zaktualizowany status (zawsze)
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add .status/rckik.json
-          git commit -m "Update status: state changed ($(date -u +'%Y-%m-%dT%H:%M:%SZ'))"
-          git push
+          if ! git diff --cached --quiet; then
+            git commit -m "Update status ($(date -u +'%Y-%m-%dT%H:%M:%SZ'))"
+            git push
+            echo "Committed .status/rckik.json"
+          else
+            echo "Brak zmian w .status/rckik.json – pomijam commit."
+          fi
 
-      # Wysyłka maila TYLKO przy zmianie
+      # Wysyłka maila TYLKO przy zmianie stanu (gdy plik .changed istnieje).
       - name: Wyślij e-mail (tylko gdy stan się zmienił)
         if: hashFiles('.changed') != ''
         uses: dawidd6/action-send-mail@v3
         with:
-          server_address: ${{ secrets.SMTP_SERVER }}  # np. smtp.gmail.com
-          server_port: ${{ secrets.SMTP_PORT }}       # 587 (STARTTLS) lub 465 (SSL)
-          secure: ${{ secrets.SMTP_SECURE }}          # np. false dla 587, true dla 465
-          username: ${{ secrets.SMTP_USER }}          # pełny adres e-mail
-          password: ${{ secrets.SMTP_PASS }}          # hasło aplikacyjne (dla Gmaila)
+          server_address: ${{ secrets.SMTP_SERVER }}   # np. smtp.gmail.com
+          server_port: ${{ secrets.SMTP_PORT }}        # 587 (STARTTLS) lub 465 (SSL)
+          secure: ${{ secrets.SMTP_SECURE }}           # "false" dla 587, "true" dla 465
+          username: ${{ secrets.SMTP_USER }}           # pełny adres e-mail
+          password: ${{ secrets.SMTP_PASS }}           # hasło aplikacyjne (Gmail/inna poczta)
           subject: "ZMIANA STANU: Komunikat RCKiK Kraków"
           to: "tomaszmm3@gmail.com"
           from: "RCKiK Monitor <${{ secrets.SMTP_USER }}>"
