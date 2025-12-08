@@ -1,4 +1,4 @@
-
+import sys
 import requests
 
 URL = "https://rckik.krakow.pl/api/wp-json/wp/v2/posts?_embed"
